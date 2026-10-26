@@ -646,6 +646,21 @@
     return out;
   }
 
+  function showLoading(text) {
+    var el = document.createElement('div');
+    el.id = 'wbShareLoading';
+    el.style.cssText = 'position:fixed;inset:0;z-index:99998;background:#0b0b10;color:#eee;'
+      + 'display:flex;align-items:center;justify-content:center;'
+      + 'font:15px/1.6 system-ui,-apple-system,sans-serif;text-align:center;padding:24px';
+    el.textContent = text || 'Loading…';
+    document.body.appendChild(el);
+  }
+
+  function hideLoading() {
+    var el = document.getElementById('wbShareLoading');
+    if (el) el.remove();
+  }
+
   function showShareError(message) {
     var box = document.createElement('div');
     box.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#0b0b10;color:#eee;'
@@ -668,9 +683,11 @@
       showShareError('This shared phone is not available.');
       return;
     }
+    showLoading('Loading shared phone…');
     var wait = new Promise(function (resolve) { setTimeout(function () { resolve(null); }, 8000); });
     Promise.race([WB.cloud.loadShared(sharedId), wait]).then(function (project) {
       if (!project || !project.data) {
+        hideLoading();
         showShareError('This shared phone is no longer available.');
         return;
       }
@@ -681,9 +698,11 @@
       window.WB_KEY_PREFIX = 'wbshare_' + short + '_' + ts + '_';
       window.DATA = withDefaults(project.data);
       if (project.title) document.title = project.title;
+      hideLoading();
       WB.ready = true;
       injectApp();
     }).catch(function () {
+      hideLoading();
       showShareError('This shared phone is no longer available.');
     });
   }
@@ -698,7 +717,7 @@
         injectApp();
         return;
       }
-      var cloudWait = new Promise(function (resolve) { setTimeout(function () { resolve(null); }, 6000); });
+      var cloudWait = new Promise(function (resolve) { setTimeout(function () { resolve(null); }, 3000); });
       Promise.race([
         WB.cloud.loadProject(pid).catch(function () { return null; }),
         cloudWait
