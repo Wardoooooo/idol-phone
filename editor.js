@@ -6,6 +6,7 @@
   'use strict';
 
   if (!window.WB) return;
+  if (window.WB.READ_ONLY) return;
 
   var PH_IMG = 'data:image/svg+xml,' + encodeURIComponent(
     '<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240">' +
@@ -20,6 +21,10 @@
   var dirty = false;
   var wallpaperTouched = false;
   var toastTimer = 0;
+  var cloudTimer = 0;
+  var cloudQueue = Promise.resolve();
+  var lastCloudSnap = '';
+  var cloudErrorShown = false;
   var panel, bodyEl, tabsEl, usageEl;
 
   function esc(v) {
@@ -529,6 +534,13 @@
       return '<li><span>' + esc(m.name || m.id) + '</span><em>' + esc(m.kind || m.type) + ' · ' + fmtBytes(m.size) + '</em></li>';
     }).join('');
     return ''
+      + card('云端作品 / 分享',
+        '<p class="wbNote">修改会<b>自动保存到云端</b>。点「分享我的作品」生成一个只读链接：别人打开只能看，不能改。分享的是点击那一刻的快照；之后改了内容要再点一次。</p>'
+        + '<p class="wbNote" id="wbCloudInfo">正在检查云端…</p>'
+        + '<div class="wbRowBtns">'
+        + btn('🔗 分享我的作品', 'cloud-share', '', 'wbBtn primary')
+        + btn('☁ 立即保存到云端', 'cloud-save', '', 'wbBtn')
+        + '</div>')
       + card('保存 / 分享',
         '<p class="wbNote">修改会存在这台电脑的浏览器里。想发给对方，先点右上角「保存并应用」，再点「生成分享网页」：会把已保存的全部内容（包括上传的图片、音乐）打包成一个独立的 <b>index.html</b>，对方打开就能看，不需要安装任何东西；分享页没有编辑按钮，内容固定在这一刻。</p>'
         + '<p class="wbNote">想要一个网址：生成下面的 <b>.zip</b>，拖到 Netlify Drop 或 Cloudflare Pages 直接上传，就能得到链接。也可以直接把 index.html 文件发给对方（手机微信里可能不方便打开，建议用网址）。</p>'
@@ -588,7 +600,7 @@
     }).join('');
     bodyEl.innerHTML = (RENDER[tab] || tabProfile)();
     bodyEl.scrollTop = resetScroll ? 0 : y;
-    if (tab === 'data') refreshUsage();
+    if (tab === 'data') { refreshUsage(); refreshCloudInfo(); }
   }
 
   function refreshUsage() {
@@ -625,6 +637,10 @@
       chatBulk = '';
       dirty = false;
       wallpaperTouched = false;
+      lastCloudSnap = JSON.stringify(E);
+      setCloudState(cloudReady()
+        ? (WB.cloud.projectId() ? '云端已连接' : '云端待创建')
+        : '仅本机保存', '');
       render(true);
     };
     if (WB.ingestEmbedded) {
@@ -636,6 +652,7 @@
 
   function close(force) {
     if (!force && dirty && !confirm('还有未保存的修改，确定关闭吗？')) return;
+    if (dirty && cloudReady()) cloudSaveNow(false).catch(function () { /* shown */ });
     panel.classList.remove('show');
     document.body.classList.remove('wbEditing');
     document.getElementById('wbOpenBtn').classList.remove('hidden');
@@ -685,6 +702,152 @@
     });
   }
 
+  /* ---------------- cloud autosave / sharing ---------------- */
+  function cloudReady() {
+    return !!(window.WB && WB.cloud && WB.cloud.configured && WB.cloud.configured());
+  }
+
+  function cloudTitle() {
+    var name = E && E.owner && E.owner.name ? String(E.owner.name).trim() : '';
+    return name ? name + "'s iPhone" : 'My iPhone';
+  }
+
+  function setCloudState(text, cls) {
+    var el = document.getElementById('wbCloudState');
+    if (!el) return;
+    el.textContent = text || '';
+    el.className = 'wbCloudState' + (cls ? ' ' + cls : '');
+  }
+
+  function refreshCloudInfo() {
+    var el = document.getElementById('wbCloudInfo');
+    if (!el) return;
+    if (!cloudReady()) {
+      el.textContent = '云端未配置：内容只保存在这台电脑的浏览器里。';
+      return;
+    }
+    var id = WB.cloud.projectId();
+    el.textContent = id
+      ? '云端作品 ID：' + String(id).slice(0, 8) + '… 修改会自动保存；分享链接是冻结快照。'
+      : '还没有云端作品；第一次自动保存时会创建。';
+  }
+
+  function doCloudSave(data, title, manual) {
+    return WB.cloud.saveDraft(data, title).then(function (result) {
+      cloudErrorShown = false;
+      setCloudState('已保存到云端', 'ok');
+      var same = false;
+      try { same = JSON.stringify(E) === JSON.stringify(data); } catch (e) { /* ignore */ }
+      if (same) {
+        dirty = false;
+        lastCloudSnap = JSON.stringify(E);
+        if (result && result.data && window.DATA) {
+          Object.keys(window.DATA).forEach(function (k) { delete window.DATA[k]; });
+          Object.keys(result.data).forEach(function (k) { window.DATA[k] = result.data[k]; });
+          try { WB.saveConfig(window.DATA, { clearWallpaper: false }); } catch (e) { /* ignore */ }
+        }
+      }
+      refreshCloudInfo();
+      return true;
+    }).catch(function (err) {
+      setCloudState('云端保存失败', 'err');
+      if (manual || !cloudErrorShown) {
+        cloudErrorShown = true;
+        toast('云端保存失败：' + (err && err.message ? err.message : err));
+      }
+      throw err;
+    });
+  }
+
+  function cloudSaveNow(manual) {
+    if (!cloudReady()) {
+      if (manual) toast('云端未配置');
+      return Promise.reject(new Error('云端未配置'));
+    }
+    if (!E) return Promise.resolve(false);
+    normalize();
+    var data;
+    try { data = JSON.parse(JSON.stringify(E)); } catch (e) { data = E; }
+    var title = cloudTitle();
+    setCloudState('保存中…', 'saving');
+    var job = function () { return doCloudSave(data, title, manual); };
+    cloudQueue = cloudQueue.then(job, job);
+    return cloudQueue;
+  }
+
+  function scheduleCloudSave() {
+    if (!cloudReady()) return;
+    clearTimeout(cloudTimer);
+    cloudTimer = setTimeout(function () {
+      cloudSaveNow(false).catch(function () { /* already shown */ });
+    }, 1200);
+  }
+
+  function checkCloud() {
+    if (!E || !panel || !panel.classList.contains('show') || !cloudReady()) return;
+    var snap;
+    try { snap = JSON.stringify(E); } catch (e) { return; }
+    if (snap === lastCloudSnap) return;
+    lastCloudSnap = snap;
+    scheduleCloudSave();
+  }
+
+  function showShareDialog(url) {
+    var old = document.getElementById('wbShareMask');
+    if (old) old.remove();
+    var mask = document.createElement('div');
+    mask.id = 'wbShareMask';
+    mask.className = 'wbShareMask';
+    mask.innerHTML = ''
+      + '<div class="wbShareBox">'
+      + '  <div class="wbShareHead"><b>分享我的作品</b><button type="button" class="wbClose" id="wbShareClose">✕</button></div>'
+      + '  <p class="wbShareHint">别人打开这个链接只能看，不能改。你之后更新内容，需要再点一次「分享我的作品」才会更新快照。</p>'
+      + '  <input id="wbShareUrl" readonly value="' + esc(url) + '">'
+      + '  <div class="wbRowBtns">'
+      + '    <button type="button" class="wbBtn primary" id="wbShareCopy">复制链接</button>'
+      + '    <a class="wbBtn" id="wbShareOpen" target="_blank" rel="noopener" href="' + esc(url) + '">打开预览</a>'
+      + '  </div>'
+      + '</div>';
+    document.body.appendChild(mask);
+    function close() { mask.remove(); }
+    document.getElementById('wbShareClose').addEventListener('click', close);
+    mask.addEventListener('click', function (e) { if (e.target === mask) close(); });
+    document.getElementById('wbShareCopy').addEventListener('click', function () {
+      var input = document.getElementById('wbShareUrl');
+      function done() { toast('分享链接已复制'); }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(done, function () {
+          input.select();
+          try { document.execCommand('copy'); } catch (e) { /* ignore */ }
+          done();
+        });
+      } else {
+        input.select();
+        try { document.execCommand('copy'); } catch (e) { /* ignore */ }
+        done();
+      }
+    });
+    setTimeout(function () { document.getElementById('wbShareUrl').select(); }, 50);
+  }
+
+  function shareCloud() {
+    if (!cloudReady()) { toast('云端未配置'); return; }
+    if (!E) return;
+    normalize();
+    var data;
+    try { data = JSON.parse(JSON.stringify(E)); } catch (e) { data = E; }
+    setCloudState('发布中…', 'saving');
+    toast('正在发布作品…');
+    WB.cloud.publish(data, cloudTitle()).then(function (res) {
+      setCloudState('已发布', 'ok');
+      refreshCloudInfo();
+      showShareDialog(WB.cloud.shareUrl(res.id));
+    }).catch(function (err) {
+      setCloudState('发布失败', 'err');
+      toast('发布失败：' + (err && err.message ? err.message : err));
+    });
+  }
+
   function save() {
     if (!E) return;
     normalize();
@@ -695,14 +858,22 @@
       toast('锁屏密码必须是 4 位数字，或留空');
       return;
     }
-    try {
-      WB.saveConfig(E, { clearWallpaper: wallpaperTouched });
-      dirty = false;
-      try { sessionStorage.setItem('wb_after_edit', '1'); } catch (e) { /* ignore */ }
-      toast('已保存，正在刷新…');
-      setTimeout(function () { location.reload(); }, 450);
-    } catch (err) {
-      toast('保存失败：' + (err && err.message ? err.message : err));
+    function finish() {
+      try {
+        WB.saveConfig(E, { clearWallpaper: wallpaperTouched });
+        dirty = false;
+        try { sessionStorage.setItem('wb_after_edit', '1'); } catch (e) { /* ignore */ }
+        toast('已保存，正在刷新…');
+        setTimeout(function () { location.reload(); }, 450);
+      } catch (err) {
+        toast('保存失败：' + (err && err.message ? err.message : err));
+      }
+    }
+    if (cloudReady()) {
+      toast('正在保存到云端…');
+      cloudSaveNow(true).then(finish, finish);
+    } else {
+      finish();
     }
   }
 
@@ -931,6 +1102,13 @@
     if (act === 'export-datajs') return exportDataJS();
     if (act === 'share-html') return sharePage(false);
     if (act === 'share-zip') return sharePage(true);
+    if (act === 'cloud-share') return shareCloud();
+    if (act === 'cloud-save') {
+      cloudSaveNow(true).then(function () {
+        toast('已保存到云端');
+      }).catch(function () { /* toast already shown */ });
+      return;
+    }
     if (act === 'import-backup') {
       var inp = document.getElementById('wbImportFile');
       if (inp) inp.click();
@@ -1155,7 +1333,7 @@
     wrap.innerHTML = ''
       + '<button type="button" id="wbOpenBtn" class="wbOpenBtn" title="自定义这个网页">✎ <span>自定义</span></button>'
       + '<div class="wbPanel" id="wbPanel">'
-      + '  <div class="wbHead"><div class="wbTitle"><b>个性化定制</b><span>改完点右上角「保存并应用」</span></div>'
+      + '  <div class="wbHead"><div class="wbTitle"><b>个性化定制</b><span>改完点右上角「保存并应用」</span><em id="wbCloudState" class="wbCloudState"></em></div>'
       + '    <div class="wbHeadBtns"><button type="button" id="wbSaveBtn" class="wbSave">保存并应用</button>'
       + '    <button type="button" id="wbCloseBtn" class="wbClose" aria-label="关闭">✕</button></div></div>'
       + '  <div class="wbTabs" id="wbTabs"></div>'
@@ -1164,11 +1342,26 @@
       + '<div class="wbToast" id="wbToast"></div>';
     document.body.appendChild(wrap);
     bind();
+    setInterval(checkCloud, 1500);
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden' && dirty && cloudReady()) {
+        cloudSaveNow(false).catch(function () { /* ignore */ });
+      }
+    });
+  }
+
+  function boot() {
+    var tries = 0;
+    (function tick() {
+      if (window.WB && WB.ready) { start(); return; }
+      if (tries++ > 120) { start(); return; }
+      setTimeout(tick, 100);
+    })();
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', start);
+    document.addEventListener('DOMContentLoaded', boot);
   } else {
-    start();
+    boot();
   }
 })();

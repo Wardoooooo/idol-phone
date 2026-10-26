@@ -30,6 +30,8 @@ shell = shell.replace(/[ \t]*<link rel="stylesheet" href="styles\.css[^"]*">\s*/
 shell = shell.replace(/[ \t]*<link rel="stylesheet" href="editor\.css[^"]*">\s*/, '\n');
 shell = shell.replace(/[ \t]*<script src="data\.js[^"]*"><\/script>\s*/,
   '\n<!--WB_DATA-->\n');
+shell = shell.replace(/[ \t]*<script src="cloud-config\.js[^"]*"><\/script>\s*/, '\n');
+shell = shell.replace(/[ \t]*<script src="cloud\.js[^"]*"><\/script>\s*/, '\n');
 shell = shell.replace(/[ \t]*<script src="icons\.js[^"]*"><\/script>\s*/,
   '\n<!--WB_ICONS-->\n');
 shell = shell.replace(/[ \t]*<!-- custom\.js[\s\S]*?-->\s*/, '\n');

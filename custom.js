@@ -42,6 +42,16 @@
   };
   window.WB = WB;
 
+  /* Shared read-only view: /?p=<project-id> */
+  var sharedId = null;
+  try {
+    var pm = location.search.match(/[?&]p=([^&]+)/);
+    sharedId = pm ? decodeURIComponent(pm[1]) : null;
+  } catch (e) { /* ignore */ }
+  WB.READ_ONLY = !!sharedId;
+  WB.sharedId = sharedId;
+  WB.cloud = window.WBCloud || null;
+
   /* ---------------- IndexedDB ---------------- */
   var dbPromise = null;
 
@@ -628,10 +638,81 @@
     document.body.appendChild(s);
   }
 
-  var timeout = new Promise(function (resolve) { setTimeout(resolve, 8000); });
-  Promise.race([loadMedia(), timeout]).then(function () {
-    applyCustom();
-    WB.ready = true;
-    injectApp();
-  });
+  function withDefaults(cfg) {
+    var out = cfg || {};
+    Object.keys(DEFAULTS).forEach(function (k) {
+      if (!(k in out)) out[k] = clone(DEFAULTS[k]);
+    });
+    return out;
+  }
+
+  function showShareError(message) {
+    var box = document.createElement('div');
+    box.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#0b0b10;color:#eee;'
+      + 'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;'
+      + 'font:15px/1.6 system-ui,-apple-system,sans-serif;text-align:center;padding:24px';
+    var title = document.createElement('div');
+    title.textContent = message || 'This shared phone is not available.';
+    title.style.fontSize = '18px';
+    var link = document.createElement('a');
+    link.href = location.pathname;
+    link.textContent = 'Create your own iPhone →';
+    link.style.color = '#8ab4ff';
+    box.appendChild(title);
+    box.appendChild(link);
+    document.body.appendChild(box);
+  }
+
+  function bootShared() {
+    if (!WB.cloud || !WB.cloud.configured()) {
+      showShareError('This shared phone is not available.');
+      return;
+    }
+    var wait = new Promise(function (resolve) { setTimeout(function () { resolve(null); }, 8000); });
+    Promise.race([WB.cloud.loadShared(sharedId), wait]).then(function (project) {
+      if (!project || !project.data) {
+        showShareError('This shared phone is no longer available.');
+        return;
+      }
+      var ts = project.published_at ? Date.parse(project.published_at) : Date.now();
+      if (isNaN(ts)) ts = Date.now();
+      var short = String(sharedId).replace(/-/g, '').slice(0, 12);
+      /* Isolate notes / PIN / wallpaper a viewer changes on the shared page. */
+      window.WB_KEY_PREFIX = 'wbshare_' + short + '_' + ts + '_';
+      window.DATA = withDefaults(project.data);
+      if (project.title) document.title = project.title;
+      WB.ready = true;
+      injectApp();
+    }).catch(function () {
+      showShareError('This shared phone is no longer available.');
+    });
+  }
+
+  function bootOwner() {
+    var wait = new Promise(function (resolve) { setTimeout(resolve, 8000); });
+    Promise.race([loadMedia(), wait]).then(function () {
+      applyCustom();
+      var pid = WB.cloud && WB.cloud.projectId ? WB.cloud.projectId() : null;
+      if (!pid || !WB.cloud.configured()) {
+        WB.ready = true;
+        injectApp();
+        return;
+      }
+      var cloudWait = new Promise(function (resolve) { setTimeout(function () { resolve(null); }, 6000); });
+      Promise.race([
+        WB.cloud.loadProject(pid).catch(function () { return null; }),
+        cloudWait
+      ]).then(function (project) {
+        if (project && project.data) {
+          window.DATA = withDefaults(project.data);
+          try { WB.saveConfig(window.DATA, { clearWallpaper: false }); } catch (e) { /* ignore */ }
+        }
+        WB.ready = true;
+        injectApp();
+      });
+    });
+  }
+
+  if (sharedId) bootShared();
+  else bootOwner();
 })();

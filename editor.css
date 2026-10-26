@@ -276,3 +276,25 @@
   .wbGrid3{grid-template-columns:1fr 1fr}
   .wbThumb.audio audio{width:150px}
 }
+
+/* ===== cloud save / share ===== */
+.wbCloudState{font-style:normal;font-size:11px;color:#8e8e93;margin-top:1px}
+.wbCloudState.ok{color:#4cd964}
+.wbCloudState.saving{color:#ffcc00}
+.wbCloudState.err{color:#ff453a}
+.wbShareMask{
+  position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.62);
+  display:flex;align-items:center;justify-content:center;padding:20px;
+}
+.wbShareBox{
+  width:min(460px,100%);background:#1c1c22;border:1px solid #34343d;border-radius:16px;
+  padding:18px;color:#f2f2f7;box-shadow:0 30px 80px rgba(0,0,0,.6);
+  font:13px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC",system-ui,sans-serif;
+}
+.wbShareHead{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.wbShareHead b{font-size:16px}
+.wbShareHint{color:#a0a0b2;font-size:12px;margin:0 0 12px}
+.wbShareBox input{
+  width:100%;padding:10px 12px;border-radius:9px;border:1px solid #34343d;
+  background:#141419;color:#f2f2f7;font-size:12px;margin-bottom:10px;
+}
